@@ -1,7 +1,9 @@
 # Virtual environment
 venv/
-env
-document-pipeline-460511-ada3510911f0.json
+env/
+
+# Secrets and credentials
++document-pipeline-460511-ada3510911f0.json
 
 # Python cache files
 *.pyc
@@ -10,13 +12,12 @@ __pycache__/
 *.pyd
 
 # Data and output folders
-
 embeddings/
 vector_db/
 logs/
 
 # Environment files
-
++.env
 *.bak
 
 # Logs
