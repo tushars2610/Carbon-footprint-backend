@@ -8,7 +8,9 @@ from joblib import Parallel, delayed
 import psutil
 from dotenv import load_dotenv
 import os
+import json
 from google.cloud import storage
+from google.oauth2 import service_account
 
 # Load environment variables
 load_dotenv()
@@ -29,6 +31,36 @@ except ImportError as e:
     print("Ensure all required scripts (utils.py, ingest.py, chunk.py, embed.py, index.py) are present in the scripts/ directory.")
     sys.exit(1)
 
+def get_gcs_client():
+    """Get Google Cloud Storage client with proper credential handling"""
+    
+    # Check if credentials are provided as JSON string (for Render/production)
+    credentials_json = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+    if credentials_json:
+        try:
+            credentials_info = json.loads(credentials_json)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            return storage.Client(credentials=credentials)
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
+            raise
+    
+    # Check if credentials file path is provided (for local development)
+    credentials_file = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if credentials_file and os.path.exists(credentials_file):
+        return storage.Client.from_service_account_json(credentials_file)
+    
+    # Try default credentials (when running on GCP)
+    try:
+        return storage.Client()
+    except Exception as e:
+        logging.error(f"Failed to initialize GCS client with default credentials: {e}")
+        raise Exception(
+            "Unable to authenticate with Google Cloud Storage. "
+            "Please set either GOOGLE_APPLICATION_CREDENTIALS_JSON (JSON string) "
+            "or GOOGLE_APPLICATION_CREDENTIALS (file path) environment variable."
+        )
+
 def process_domain(domain: str, base_dir: str, global_config: Dict[str, Any], stages: List[str], skip_existing: bool, force: bool):
     """Process a single domain through specified pipeline stages."""
     if not domain:
@@ -36,7 +68,7 @@ def process_domain(domain: str, base_dir: str, global_config: Dict[str, Any], st
         return
     
     config_path = f"{base_dir}/scripts/config/{domain}.yaml"
-    client = storage.Client.from_service_account_json(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    client = get_gcs_client()  # Use the helper function instead
     bucket = client.bucket(GCS_BUCKET_NAME)
     
     # Check if config exists in GCS
@@ -124,8 +156,11 @@ def run_pipeline(
     if not GCS_BUCKET_NAME:
         logging.error("GCS_BUCKET_NAME not set in .env file")
         return
-    if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-        logging.error("GOOGLE_APPLICATION_CREDENTIALS not set in .env file")
+    
+    # Check for either type of credentials
+    if not (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")):
+        logging.error("Neither GOOGLE_APPLICATION_CREDENTIALS nor GOOGLE_APPLICATION_CREDENTIALS_JSON is set in .env file")
+        logging.error("Please set one of these environment variables for GCP authentication")
         return
     
     try:

@@ -2,6 +2,7 @@ import json
 import re
 from typing import Tuple
 from google.cloud import storage
+from google.oauth2 import service_account
 from scripts.utils import gcs_read_json, parse_gcs_path
 from dotenv import load_dotenv
 import os
@@ -10,6 +11,36 @@ import logging
 # Load environment variables
 load_dotenv()
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+
+def get_gcs_client():
+    """Get Google Cloud Storage client with proper credential handling"""
+    
+    # Check if credentials are provided as JSON string (for Render/production)
+    credentials_json = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+    if credentials_json:
+        try:
+            credentials_info = json.loads(credentials_json)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            return storage.Client(credentials=credentials)
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
+            raise
+    
+    # Check if credentials file path is provided (for local development)
+    credentials_file = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if credentials_file and os.path.exists(credentials_file):
+        return storage.Client.from_service_account_json(credentials_file)
+    
+    # Try default credentials (when running on GCP)
+    try:
+        return storage.Client()
+    except Exception as e:
+        logging.error(f"Failed to initialize GCS client with default credentials: {e}")
+        raise Exception(
+            "Unable to authenticate with Google Cloud Storage. "
+            "Please set either GOOGLE_APPLICATION_CREDENTIALS_JSON (JSON string) "
+            "or GOOGLE_APPLICATION_CREDENTIALS (file path) environment variable."
+        )
 
 def load_validation_configs(domain: str) -> tuple[dict, dict]:
     """
@@ -22,7 +53,7 @@ def load_validation_configs(domain: str) -> tuple[dict, dict]:
         Tuple of whitelist and blacklist dictionaries.
     """
     try:
-        client = storage.Client.from_service_account_json(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+        client = get_gcs_client()
         whitelist = gcs_read_json(f"gs://{GCS_BUCKET_NAME}/data/{domain}/config/whitelist.json")
         blacklist = gcs_read_json(f"gs://{GCS_BUCKET_NAME}/data/{domain}/config/blacklist.json")
         

@@ -9,6 +9,7 @@ from tqdm import tqdm
 from typing import List, Dict, Any
 from .utils import setup_logging, gcs_list_files, gcs_read_json, gcs_write_json
 from dotenv import load_dotenv
+from google.oauth2 import service_account
 import os
 import nltk
 nltk.download('punkt_tab')
@@ -16,6 +17,35 @@ nltk.download('punkt_tab')
 load_dotenv()
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
+def get_gcs_client():
+    """Get Google Cloud Storage client with proper credential handling"""
+    
+    # Check if credentials are provided as JSON string (for Render/production)
+    credentials_json = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+    if credentials_json:
+        try:
+            credentials_info = json.loads(credentials_json)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            return storage.Client(credentials=credentials)
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
+            raise
+    
+    # Check if credentials file path is provided (for local development)
+    credentials_file = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if credentials_file and os.path.exists(credentials_file):
+        return storage.Client.from_service_account_json(credentials_file)
+    
+    # Try default credentials (when running on GCP)
+    try:
+        return storage.Client()
+    except Exception as e:
+        logging.error(f"Failed to initialize GCS client with default credentials: {e}")
+        raise Exception(
+            "Unable to authenticate with Google Cloud Storage. "
+            "Please set either GOOGLE_APPLICATION_CREDENTIALS_JSON (JSON string) "
+            "or GOOGLE_APPLICATION_CREDENTIALS (file path) environment variable."
+        )
 class DocumentChunker:
     def __init__(self, domain: str, config: Dict[str, Any], base_dir: str):
         self.domain = domain
@@ -25,7 +55,7 @@ class DocumentChunker:
         self.chunk_overlap = config['chunking']['chunk_overlap']
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
         self.sentence_boundary = re.compile(r'(?<=[.!?])\s+(?=[A-Z0-9])|(?<=\n)\s*') if config['chunking']['sentence_boundary'] else None
-        self.client = storage.Client.from_service_account_json(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+        self.client = get_gcs_client()  # Use the helper function
         self.bucket = self.client.bucket(GCS_BUCKET_NAME)
         setup_logging(config)
 

@@ -5,6 +5,7 @@ import pickle
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
+from google.oauth2 import service_account
 from pathlib import Path
 from typing import Dict, Any, List
 from dotenv import load_dotenv
@@ -14,15 +15,35 @@ from jsonschema import validate, ValidationError
 # Load environment variables
 load_dotenv()
 
-# Initialize Google Cloud Storage client
 def get_gcs_client():
-    """Initialize and return a Google Cloud Storage client."""
+    """Get Google Cloud Storage client with proper credential handling"""
+    
+    # Check if credentials are provided as JSON string (for Render/production)
+    credentials_json = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+    if credentials_json:
+        try:
+            credentials_info = json.loads(credentials_json)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            return storage.Client(credentials=credentials)
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
+            raise
+    
+    # Check if credentials file path is provided (for local development)
+    credentials_file = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if credentials_file and os.path.exists(credentials_file):
+        return storage.Client.from_service_account_json(credentials_file)
+    
+    # Try default credentials (when running on GCP)
     try:
-        client = storage.Client.from_service_account_json(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-        return client
+        return storage.Client()
     except Exception as e:
-        logging.error(f"Error initializing GCS client: {e}")
-        raise
+        logging.error(f"Failed to initialize GCS client with default credentials: {e}")
+        raise Exception(
+            "Unable to authenticate with Google Cloud Storage. "
+            "Please set either GOOGLE_APPLICATION_CREDENTIALS_JSON (JSON string) "
+            "or GOOGLE_APPLICATION_CREDENTIALS (file path) environment variable."
+        )
 
 # Configure logging with thread-safe handler
 def setup_logging(config: Dict[str, Any]):
@@ -170,7 +191,6 @@ def generate_domain_config(domain_name: str, global_config: Dict[str, Any], outp
         if output_dir.startswith('gs://'):
             bucket_name, blob_name = parse_gcs_path(f"{output_dir}/{domain_name}.yaml")
             client = get_gcs_client()
-            bucket = client.bucket(bucket_name)
             bucket = client.bucket(bucket_name)
             blob = bucket.blob(blob_name)
             blob.upload_from_string(yaml.safe_dump(domain_config, default_flow_style=False), content_type='text/yaml')
