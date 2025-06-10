@@ -1,6 +1,7 @@
 # Virtual environment
 venv/
-
+env
+document-pipeline-460511-ada3510911f0.json
 
 # Python cache files
 *.pyc
