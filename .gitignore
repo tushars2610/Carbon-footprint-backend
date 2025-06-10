@@ -1,6 +1,6 @@
 # Virtual environment
 venv/
-env/
+env
 
 # Secrets and credentials
 document-pipeline-460511-ada3510911f0.json
