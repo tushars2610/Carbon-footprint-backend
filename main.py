@@ -61,6 +61,7 @@ app.include_router(carbon_router)
 # Copy them exactly as they were - for example:
 
 @app.get("/")
+@app.head("/")  # Add this line
 async def root():
     return {
         "message": "RAG Vector Database API with Carbon Calculator", 
