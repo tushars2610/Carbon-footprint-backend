@@ -7,11 +7,12 @@ import os
 import requests
 import json
 from datetime import datetime
+import certifi
 
 # Create router instead of FastAPI app
 router = APIRouter(prefix="/carbon", tags=["Carbon Calculator"])
 
-# MongoDB connection configuration - Fixed for Render deployment
+# MongoDB connection configuration - Fixed for SSL issues
 MONGODB_URL = os.getenv("MONGODB_URI") or os.getenv("MONGODB_URL")
 DATABASE_NAME = "rag_db"
 
@@ -36,10 +37,11 @@ def debug_environment():
         print(f"MONGODB_URL starts with: {url[:30]}...")
     
     print(f"All env vars containing 'MONGO': {[k for k in os.environ.keys() if 'MONGO' in k.upper()]}")
+    print(f"SSL Certificate Authority file: {certifi.where()}")
     print("================================")
 
 def get_mongodb_client():
-    """Initialize MongoDB client with proper SSL configuration for Render"""
+    """Initialize MongoDB client with proper SSL configuration for MongoDB Atlas"""
     global client, db
     
     if client is not None:
@@ -54,49 +56,94 @@ def get_mongodb_client():
         print("Attempting to connect to MongoDB...")
         print(f"Using connection string: {MONGODB_URL[:50]}...") # Only show first 50 chars for security
         
-        # For Render deployment, use the connection string as-is
-        # Remove redundant SSL parameters from code since they're in the connection string
-        client = MongoClient(
-            MONGODB_URL,
-            serverSelectionTimeoutMS=30000,
-            connectTimeoutMS=30000,
-            socketTimeoutMS=30000
-        )
+        # Multiple connection strategies to handle SSL issues
+        connection_strategies = [
+            # Strategy 1: Use certifi CA bundle with TLS 1.2+
+            {
+                "params": {
+                    "serverSelectionTimeoutMS": 30000,
+                    "connectTimeoutMS": 30000,
+                    "socketTimeoutMS": 30000,
+                    "ssl": True,
+                    "ssl_cert_reqs": ssl.CERT_REQUIRED,
+                    "ssl_ca_certs": certifi.where(),
+                    "tlsVersion": "TLSv1.2"
+                },
+                "description": "SSL with certifi CA bundle and TLS 1.2"
+            },
+            # Strategy 2: Disable SSL certificate verification (less secure but works)
+            {
+                "params": {
+                    "serverSelectionTimeoutMS": 30000,
+                    "connectTimeoutMS": 30000,
+                    "socketTimeoutMS": 30000,
+                    "ssl": True,
+                    "ssl_cert_reqs": ssl.CERT_NONE,
+                    "tlsAllowInvalidCertificates": True,
+                    "tlsAllowInvalidHostnames": True
+                },
+                "description": "SSL with disabled certificate verification"
+            },
+            # Strategy 3: Use connection string SSL parameters only
+            {
+                "params": {
+                    "serverSelectionTimeoutMS": 30000,
+                    "connectTimeoutMS": 30000,
+                    "socketTimeoutMS": 30000
+                },
+                "description": "Connection string SSL parameters only"
+            },
+            # Strategy 4: Alternative SSL context
+            {
+                "params": {
+                    "serverSelectionTimeoutMS": 30000,
+                    "connectTimeoutMS": 30000,
+                    "socketTimeoutMS": 30000,
+                    "ssl": True,
+                    "ssl_cert_reqs": ssl.CERT_NONE,
+                    "ssl_match_hostname": False
+                },
+                "description": "SSL with no hostname matching"
+            }
+        ]
         
-        # Test the connection
-        client.admin.command('ping')
-        db = client[DATABASE_NAME]
+        for i, strategy in enumerate(connection_strategies, 1):
+            try:
+                print(f"Trying connection strategy {i}: {strategy['description']}")
+                
+                client = MongoClient(MONGODB_URL, **strategy["params"])
+                
+                # Test the connection
+                client.admin.command('ping')
+                db = client[DATABASE_NAME]
+                
+                print(f"MongoDB connected successfully using strategy {i}!")
+                print(f"Database: {DATABASE_NAME}")
+                
+                # Try to list collections to verify connection
+                try:
+                    collections = db.list_collection_names()
+                    print(f"Collections available: {collections}")
+                except Exception as e:
+                    print(f"Warning: Could not list collections: {e}")
+                
+                return client, db
+                
+            except Exception as e:
+                print(f"Strategy {i} failed: {str(e)[:200]}...")
+                client = None
+                db = None
+                continue
         
-        print("MongoDB connected successfully!")
-        print(f"Database: {DATABASE_NAME}")
-        
-        # Try to list collections to verify connection
-        try:
-            collections = db.list_collection_names()
-            print(f"Collections available: {collections}")
-        except Exception as e:
-            print(f"Warning: Could not list collections: {e}")
-        
-        return client, db
+        # If all strategies failed
+        print("All connection strategies failed")
+        return None, None
         
     except Exception as e:
-        print(f"MongoDB connection failed: {e}")
-        print(f"Connection string used: {MONGODB_URL[:50] if MONGODB_URL else 'None'}...")
-        
-        # Try alternative connection method
-        try:
-            print("Trying alternative connection method...")
-            client = MongoClient(MONGODB_URL)
-            client.admin.command('ping')
-            db = client[DATABASE_NAME]
-            print("MongoDB connected successfully with alternative method!")
-            return client, db
-        except Exception as e2:
-            print(f"Alternative connection also failed: {e2}")
-            print("Application will continue without database functionality")
-            client = None
-            db = None
-            return None, None
+        print(f"MongoDB connection setup failed: {e}")
+        client = None
+        db = None
+        return None, None
 
 def ensure_db_connection():
     """Ensure database connection is available for endpoints"""

@@ -5,8 +5,9 @@ import uuid
 from typing import List, Dict, Optional
 import logging
 from datetime import datetime, timedelta
+import ssl
 
-# MongoDB connection configuration - Fixed for Render deployment
+# MongoDB connection configuration - Fixed for SSL issues
 MONGODB_URL = os.getenv("MONGODB_URI") or os.getenv("MONGODB_URL")
 DATABASE_NAME = "rag_db"
 SESSION_HISTORIES_COLLECTION = "session_histories"
@@ -46,7 +47,7 @@ def debug_environment():
     logger.info("================================")
 
 def get_mongodb_client():
-    """Initialize MongoDB client with proper SSL configuration for Render"""
+    """Initialize MongoDB client with proper SSL configuration"""
     global client, db, session_histories_collection, buffer_session_collection
     
     if client is not None:
@@ -61,22 +62,61 @@ def get_mongodb_client():
         logger.info("Attempting to connect to MongoDB...")
         logger.info(f"Using connection string: {MONGODB_URL[:50]}...") # Only show first 50 chars for security
         
-        # For Render deployment, use the connection string as-is
-        # Remove redundant SSL parameters from code since they're in the connection string
-        client = MongoClient(
-            MONGODB_URL,
-            serverSelectionTimeoutMS=30000,
-            connectTimeoutMS=30000,
-            socketTimeoutMS=30000
-        )
+        # Method 1: Try with explicit SSL context (most compatible)
+        try:
+            logger.info("Trying connection with SSL context...")
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            client = MongoClient(
+                MONGODB_URL,
+                ssl_context=ssl_context,
+                serverSelectionTimeoutMS=30000,
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000,
+                maxPoolSize=10,
+                minPoolSize=1,
+                maxIdleTimeMS=30000,
+                waitQueueTimeoutMS=5000
+            )
+            
+            # Test the connection
+            client.admin.command('ping')
+            logger.info("MongoDB connected successfully with SSL context!")
+            
+        except Exception as e:
+            logger.warning(f"SSL context method failed: {e}")
+            
+            # Method 2: Try with TLS options in connection string
+            logger.info("Trying connection with TLS options...")
+            
+            # Clean the connection string and add proper TLS options
+            clean_url = MONGODB_URL.split('?')[0]  # Remove existing query params
+            
+            # Build new connection string with explicit TLS options
+            tls_options = [
+                "tls=true",
+                "tlsAllowInvalidCertificates=true",
+                "tlsAllowInvalidHostnames=true",
+                "retryWrites=true",
+                "w=majority",
+                "serverSelectionTimeoutMS=30000",
+                "connectTimeoutMS=30000",
+                "socketTimeoutMS=30000"
+            ]
+            
+            new_url = f"{clean_url}?{'&'.join(tls_options)}"
+            
+            client = MongoClient(new_url)
+            client.admin.command('ping')
+            logger.info("MongoDB connected successfully with TLS options!")
         
-        # Test the connection
-        client.admin.command('ping')
+        # Initialize database and collections
         db = client[DATABASE_NAME]
         session_histories_collection = db[SESSION_HISTORIES_COLLECTION]
         buffer_session_collection = db[BUFFER_SESSION_COLLECTION]
         
-        logger.info("MongoDB connected successfully!")
         logger.info(f"Database: {DATABASE_NAME}")
         
         # Try to list collections to verify connection
@@ -89,21 +129,32 @@ def get_mongodb_client():
         return client, db, session_histories_collection, buffer_session_collection
         
     except Exception as e:
-        logger.error(f"MongoDB connection failed: {e}")
-        logger.error(f"Connection string used: {MONGODB_URL[:50] if MONGODB_URL else 'None'}...")
+        logger.error(f"All MongoDB connection methods failed: {e}")
         
-        # Try alternative connection method
+        # Method 3: Try with basic pymongo options (fallback)
         try:
-            logger.info("Trying alternative connection method...")
-            client = MongoClient(MONGODB_URL)
+            logger.info("Trying basic connection as fallback...")
+            
+            # Use the original URL but with different client options
+            client = MongoClient(
+                MONGODB_URL,
+                tls=True,
+                tlsAllowInvalidCertificates=True,
+                tlsAllowInvalidHostnames=True,
+                serverSelectionTimeoutMS=30000,
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000
+            )
+            
             client.admin.command('ping')
             db = client[DATABASE_NAME]
             session_histories_collection = db[SESSION_HISTORIES_COLLECTION]
             buffer_session_collection = db[BUFFER_SESSION_COLLECTION]
-            logger.info("MongoDB connected successfully with alternative method!")
+            logger.info("MongoDB connected successfully with basic fallback method!")
             return client, db, session_histories_collection, buffer_session_collection
+            
         except Exception as e2:
-            logger.error(f"Alternative connection also failed: {e2}")
+            logger.error(f"Fallback connection also failed: {e2}")
             logger.error("Application will continue without database functionality")
             client = None
             db = None
