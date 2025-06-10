@@ -1,0 +1,27 @@
+chunking:
+  chunk_size: 300
+  chunk_overlap: 100
+  min_chunk_size: 100
+  sentence_boundary: true
+
+embedding:
+  model_name: "BAAI/bge-small-en-v1.5"
+  batch_size: 32
+  normalize: true
+  use_gpu: auto  # auto, true, false
+
+indexing:
+  index_type: "IndexIVFFlat"
+  nlist_factor: 100
+  nprobe: 10
+  metric: "inner_product"
+
+processing:
+  batch_size: 100000
+  parallel_domains: 2
+  temp_dir: "temp"
+
+logging:
+  level: "info"
+  file: "pipeline.log"
+  console: true

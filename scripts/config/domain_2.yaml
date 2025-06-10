@@ -1,0 +1,20 @@
+chunking:
+  chunk_overlap: 200
+  chunk_size: 512
+  min_chunk_size: 100
+  sentence_boundary: true
+domain_name: domain_2
+embedding:
+  batch_size: 32
+  model_name: BAAI/bge-small-en-v1.5
+  normalize: true
+  use_gpu: auto
+indexing:
+  index_type: IndexIVFFlat
+  metric: inner_product
+  nlist_factor: 100
+  nprobe: 10
+metadata:
+  description: domain_2 documents collection
+  last_updated: '2025-05-20'
+  source: unknown

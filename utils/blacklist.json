@@ -1,0 +1,4 @@
+{
+  "keywords": ["offensive", "inappropriate", "spam"],
+  "patterns": ["\\b(hack|attack)\\b", "\\b(illegal|unethical)\\b"]
+}

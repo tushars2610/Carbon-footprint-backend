@@ -1,0 +1,4 @@
+{
+  "keywords": ["research", "data", "analysis", "report", "study"],
+  "patterns": ["\\bdata\\s+analysis\\b", "\\bresearch\\s+paper\\b"]
+}
