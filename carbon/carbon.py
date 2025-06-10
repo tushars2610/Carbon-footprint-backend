@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Dict, Optional, Any, List
 from pymongo import MongoClient
+import ssl
 import os
 import requests
 import json
@@ -10,12 +11,107 @@ from datetime import datetime
 # Create router instead of FastAPI app
 router = APIRouter(prefix="/carbon", tags=["Carbon Calculator"])
 
-# MongoDB connection
-MONGODB_URL = os.getenv("MONGODB_URI")
+# MongoDB connection configuration - Fixed for Render deployment
+MONGODB_URL = os.getenv("MONGODB_URI") or os.getenv("MONGODB_URL")
 DATABASE_NAME = "rag_db"
 
-client = MongoClient(MONGODB_URL)
-db = client[DATABASE_NAME]
+# Global variables for MongoDB client and database
+client = None
+db = None
+
+def debug_environment():
+    """Debug function to check MongoDB environment variables"""
+    print("=== MongoDB Environment Debug ===")
+    print(f"MONGODB_URI: {'Set' if os.getenv('MONGODB_URI') else 'Not set'}")
+    print(f"MONGODB_URL: {'Set' if os.getenv('MONGODB_URL') else 'Not set'}")
+    
+    if os.getenv('MONGODB_URI'):
+        uri = os.getenv('MONGODB_URI')
+        print(f"MONGODB_URI length: {len(uri)}")
+        print(f"MONGODB_URI starts with: {uri[:30]}...")
+    
+    if os.getenv('MONGODB_URL'):
+        url = os.getenv('MONGODB_URL')
+        print(f"MONGODB_URL length: {len(url)}")
+        print(f"MONGODB_URL starts with: {url[:30]}...")
+    
+    print(f"All env vars containing 'MONGO': {[k for k in os.environ.keys() if 'MONGO' in k.upper()]}")
+    print("================================")
+
+def get_mongodb_client():
+    """Initialize MongoDB client with proper SSL configuration for Render"""
+    global client, db
+    
+    if client is not None:
+        return client, db
+    
+    try:
+        if not MONGODB_URL:
+            print("WARNING: Neither MONGODB_URI nor MONGODB_URL found in environment variables")
+            print("Available env vars:", [k for k in os.environ.keys() if 'MONGO' in k.upper()])
+            return None, None
+            
+        print("Attempting to connect to MongoDB...")
+        print(f"Using connection string: {MONGODB_URL[:50]}...") # Only show first 50 chars for security
+        
+        # For Render deployment, use the connection string as-is
+        # Remove redundant SSL parameters from code since they're in the connection string
+        client = MongoClient(
+            MONGODB_URL,
+            serverSelectionTimeoutMS=30000,
+            connectTimeoutMS=30000,
+            socketTimeoutMS=30000
+        )
+        
+        # Test the connection
+        client.admin.command('ping')
+        db = client[DATABASE_NAME]
+        
+        print("MongoDB connected successfully!")
+        print(f"Database: {DATABASE_NAME}")
+        
+        # Try to list collections to verify connection
+        try:
+            collections = db.list_collection_names()
+            print(f"Collections available: {collections}")
+        except Exception as e:
+            print(f"Warning: Could not list collections: {e}")
+        
+        return client, db
+        
+    except Exception as e:
+        print(f"MongoDB connection failed: {e}")
+        print(f"Connection string used: {MONGODB_URL[:50] if MONGODB_URL else 'None'}...")
+        
+        # Try alternative connection method
+        try:
+            print("Trying alternative connection method...")
+            client = MongoClient(MONGODB_URL)
+            client.admin.command('ping')
+            db = client[DATABASE_NAME]
+            print("MongoDB connected successfully with alternative method!")
+            return client, db
+        except Exception as e2:
+            print(f"Alternative connection also failed: {e2}")
+            print("Application will continue without database functionality")
+            client = None
+            db = None
+            return None, None
+
+def ensure_db_connection():
+    """Ensure database connection is available for endpoints"""
+    global client, db
+    
+    if db is None:
+        client, db = get_mongodb_client()
+    
+    if db is None:
+        raise HTTPException(
+            status_code=503, 
+            detail="Database connection unavailable. Please try again later."
+        )
+    
+    return db
 
 # LLM API Configuration
 LLM_API_URL = "https://apillm.mobiloittegroup.com/api/generate"
@@ -61,7 +157,7 @@ class CarbonDataListResponse(BaseModel):
     total_records: int
     data: List[Dict[str, Any]]
 
-# Helper functions (same as original)
+# Helper functions
 def get_age_group(age: int) -> str:
     """Convert age to age group format used in database"""
     if age <= 10:
@@ -84,6 +180,7 @@ def get_age_group(age: int) -> str:
 def calculate_electricity_emission(country: str, kwh: float) -> tuple[float, dict]:
     """Calculate CO2 emission from electricity consumption"""
     try:
+        db = ensure_db_connection()
         country_data = db["country-emission"].find_one({"Country": country})
         
         if not country_data:
@@ -101,12 +198,15 @@ def calculate_electricity_emission(country: str, kwh: float) -> tuple[float, dic
         
         return emission_kg, details
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating electricity emission: {str(e)}")
 
 def calculate_diet_emission(age: int, diet_type: str) -> tuple[float, dict]:
     """Calculate CO2 emission from eating habits"""
     try:
+        db = ensure_db_connection()
         age_group = get_age_group(age)
         
         diet_data = db["eating_habits"].find_one({
@@ -129,12 +229,15 @@ def calculate_diet_emission(age: int, diet_type: str) -> tuple[float, dict]:
         
         return emission_kg, details
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating diet emission: {str(e)}")
 
 def calculate_transport_emission(transport_list: list[TransportData]) -> tuple[float, dict]:
     """Calculate CO2 emission from transportation"""
     try:
+        db = ensure_db_connection()
         transport_data = db["extras"].find_one({"Title": "Transport Emission"})
         
         if not transport_data:
@@ -167,12 +270,15 @@ def calculate_transport_emission(transport_list: list[TransportData]) -> tuple[f
         
         return total_emission, details
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating transport emission: {str(e)}")
 
 def calculate_waste_emission(waste: WasteData) -> tuple[float, dict]:
     """Calculate CO2 emission from waste generation"""
     try:
+        db = ensure_db_connection()
         waste_data = db["extras"].find_one({"Title": "Waste"})
         
         if not waste_data:
@@ -213,6 +319,8 @@ def calculate_waste_emission(waste: WasteData) -> tuple[float, dict]:
         
         return total_emission, details
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating waste emission: {str(e)}")
 
@@ -311,6 +419,7 @@ Format your response as JSON with the following structure:
 def save_carbon_data(request_data: dict, response_data: dict, timestamp: str) -> str:
     """Save carbon calculation data to MongoDB with timestamp as unique identifier"""
     try:
+        db = ensure_db_connection()
         document = {
             "timestamp": timestamp,
             "request_data": request_data,
@@ -325,14 +434,43 @@ def save_carbon_data(request_data: dict, response_data: dict, timestamp: str) ->
         print(f"Error saving carbon data: {str(e)}")
         return ""
 
+# Initialize MongoDB connection when module loads
+print("Initializing MongoDB connection...")
+debug_environment()  # Debug environment variables
+get_mongodb_client()
+
 # API Endpoints
 @router.get("/health")
 async def carbon_health_check():
+    """Health check endpoint to verify database connection"""
     try:
+        db = ensure_db_connection()
+        # Test database connection
         db.list_collection_names()
-        return {"status": "healthy", "database": "connected", "timestamp": datetime.now()}
+        collections = db.list_collection_names()
+        
+        return {
+            "status": "healthy", 
+            "database": "connected", 
+            "timestamp": datetime.now().isoformat(),
+            "database_name": DATABASE_NAME,
+            "collections_count": len(collections),
+            "collections": collections[:5]  # Show first 5 collections
+        }
+    except HTTPException as e:
+        return {
+            "status": "unhealthy", 
+            "database": "disconnected", 
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e.detail)
+        }
     except Exception as e:
-        return {"status": "unhealthy", "error": str(e), "timestamp": datetime.now()}
+        return {
+            "status": "unhealthy", 
+            "database": "disconnected", 
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
 
 @router.post("/calculate-emission", response_model=CarbonCalculationResponse)
 async def calculate_carbon_emission(request: CarbonCalculationRequest):
@@ -418,6 +556,7 @@ async def get_carbon_calculations(
 ):
     """Get list of carbon calculations stored in database with timestamps"""
     try:
+        db = ensure_db_connection()
         sort_direction = -1 if sort_order.lower() == "desc" else 1
         
         # Get total count
@@ -456,6 +595,8 @@ async def get_carbon_calculations(
             data=results
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching carbon calculations: {str(e)}")
 
@@ -463,6 +604,8 @@ async def get_carbon_calculations(
 async def get_carbon_calculation_by_timestamp(timestamp: str):
     """Get specific carbon calculation by timestamp"""
     try:
+        db = ensure_db_connection()
+        
         # First try exact match
         result = db["carbon_data"].find_one({"timestamp": timestamp})
         
@@ -486,6 +629,8 @@ async def get_carbon_calculation_by_timestamp(timestamp: str):
         result["_id"] = str(result["_id"])
         return result
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching calculation: {str(e)}")
 
@@ -493,8 +638,11 @@ async def get_carbon_calculation_by_timestamp(timestamp: str):
 async def get_supported_countries():
     """Get list of supported countries"""
     try:
+        db = ensure_db_connection()
         countries = db["country-emission"].distinct("Country")
         return {"countries": sorted(countries)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching countries: {str(e)}")
 
@@ -502,12 +650,15 @@ async def get_supported_countries():
 async def get_transport_modes():
     """Get available transport modes and their emission factors"""
     try:
+        db = ensure_db_connection()
         transport_data = db["extras"].find_one({"Title": "Transport Emission"})
         if not transport_data:
             raise HTTPException(status_code=404, detail="Transport data not found")
         
         transport_modes = {k: v for k, v in transport_data.items() if k not in ["_id", "Title"]}
         return {"transport_modes": transport_modes, "unit": "kg CO2 per km"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching transport modes: {str(e)}")
 
@@ -515,12 +666,15 @@ async def get_transport_modes():
 async def get_diet_types():
     """Get available diet types"""
     try:
+        db = ensure_db_connection()
         diet_types = db["eating_habits"].distinct("Diet Type")
         age_groups = db["eating_habits"].distinct("Age Group")
         return {
             "diet_types": sorted(diet_types),
             "age_groups": sorted(age_groups)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching diet types: {str(e)}")
 
@@ -528,6 +682,8 @@ async def get_diet_types():
 async def delete_carbon_calculation(timestamp: str):
     """Delete a specific carbon calculation by timestamp"""
     try:
+        db = ensure_db_connection()
+        
         # First try exact match
         result = db["carbon_data"].delete_one({"timestamp": timestamp})
         
@@ -549,6 +705,8 @@ async def delete_carbon_calculation(timestamp: str):
         
         return {"message": "Calculation deleted successfully", "timestamp": timestamp}
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting calculation: {str(e)}")
 
@@ -556,6 +714,7 @@ async def delete_carbon_calculation(timestamp: str):
 async def get_all_timestamps():
     """Get all timestamps from carbon calculations"""
     try:
+        db = ensure_db_connection()
         timestamps = db["carbon_data"].find({}, {"timestamp": 1, "_id": 0}).sort("timestamp", -1)
         timestamp_list = [doc["timestamp"] for doc in timestamps]
         
@@ -564,5 +723,22 @@ async def get_all_timestamps():
             "timestamps": timestamp_list
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching timestamps: {str(e)}")
+
+# Debug endpoint to check environment variables
+@router.get("/debug/env")
+async def debug_env():
+    """Debug endpoint to check environment variables (use only in development)"""
+    return {
+        "mongodb_uri_set": bool(os.getenv("MONGODB_URI")),
+        "mongodb_url_set": bool(os.getenv("MONGODB_URL")),
+        "mongodb_uri_length": len(os.getenv("MONGODB_URI", "")),
+        "mongodb_url_length": len(os.getenv("MONGODB_URL", "")),
+        "mongodb_vars": [k for k in os.environ.keys() if 'MONGO' in k.upper()],
+        "database_name": DATABASE_NAME,
+        "client_status": "Connected" if client is not None else "Disconnected",
+        "db_status": "Available" if db is not None else "Unavailable"
+    }
