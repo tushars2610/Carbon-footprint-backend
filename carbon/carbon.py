@@ -8,6 +8,8 @@ import requests
 import json
 from datetime import datetime
 import certifi
+from bson import ObjectId
+import uuid
 
 # Create router instead of FastAPI app
 router = APIRouter(prefix="/carbon", tags=["Carbon Calculator"])
@@ -203,6 +205,69 @@ class CarbonCalculationResponse(BaseModel):
 class CarbonDataListResponse(BaseModel):
     total_records: int
     data: List[Dict[str, Any]]
+
+class PlantResponse(BaseModel):
+    plant_id: int
+    common_name: str
+    monthly_carbon_absorption_g: int
+    plant_type: str
+    light_requirement: str
+    water_frequency: str
+    pot_size_min_inches: int
+    soil_type: str
+    humidity_preference: str
+    temperature_range_f: str
+    growth_rate: str
+    max_height_inches: int
+    care_difficulty: str
+    propagation_method: str
+    flowering: str
+    pet_safe: str
+    air_purifying: str
+
+class PlantsListResponse(BaseModel):
+    total_plants: int
+    plants: List[PlantResponse]
+
+class AddPlantRequest(BaseModel):
+    plant_id: int = Field(..., description="ID of the plant from Plants collection")
+
+class PlantOwnedResponse(BaseModel):
+    plants_owned_id: str
+    plant_id: int
+    common_name: str
+    monthly_carbon_absorption_g: int
+    plant_type: str
+    light_requirement: str
+    water_frequency: str
+    pot_size_min_inches: int
+    soil_type: str
+    humidity_preference: str
+    temperature_range_f: str
+    growth_rate: str
+    max_height_inches: int
+    care_difficulty: str
+    propagation_method: str
+    flowering: str
+    pet_safe: str
+    air_purifying: str
+    added_at: str
+
+class PlantsOwnedListResponse(BaseModel):
+    total_owned_plants: int
+    owned_plants: List[PlantOwnedResponse]
+
+class CarbonAbsorptionResponse(BaseModel):
+    total_monthly_carbon_absorption_g: int
+    total_plants_owned: int
+
+class LatestEmissionResponse(BaseModel):
+    total_monthly_emission_kg: float
+    timestamp: str
+    created_at: str
+
+class SimpleEmissionResponse(BaseModel):
+    total_monthly_emission_kg: float
 
 # Helper functions
 def get_age_group(age: int) -> str:
@@ -653,6 +718,10 @@ async def get_carbon_calculation_by_timestamp(timestamp: str):
     try:
         db = ensure_db_connection()
         
+        # Decode URL-encoded timestamp
+        from urllib.parse import unquote
+        timestamp = unquote(timestamp)
+        
         # First try exact match
         result = db["carbon_data"].find_one({"timestamp": timestamp})
         
@@ -669,6 +738,13 @@ async def get_carbon_calculation_by_timestamp(timestamp: str):
         # If still not found, try matching by created_at field as fallback
         if not result:
             result = db["carbon_data"].find_one({"created_at": timestamp})
+        
+        # Additional fallback - try with timezone variations
+        if not result:
+            for suffix in ["Z", "+00:00", ".000Z", ".000000Z"]:
+                result = db["carbon_data"].find_one({"timestamp": timestamp + suffix})
+                if result:
+                    break
         
         if not result:
             raise HTTPException(status_code=404, detail="Calculation not found")
@@ -789,3 +865,346 @@ async def debug_env():
         "client_status": "Connected" if client is not None else "Disconnected",
         "db_status": "Available" if db is not None else "Unavailable"
     }
+
+
+@router.get("/plants", response_model=PlantsListResponse)
+async def get_all_plants():
+    """Get all plants from the Plants collection"""
+    try:
+        db = ensure_db_connection()
+        
+        # Get all plants from the Plants collection
+        plants_cursor = db["Plants"].find({}, {"_id": 0})  # Exclude MongoDB _id field
+        plants_list = list(plants_cursor)
+        
+        # Convert to response format
+        plants_response = []
+        for plant in plants_list:
+            plant_response = PlantResponse(**plant)
+            plants_response.append(plant_response)
+        
+        return PlantsListResponse(
+            total_plants=len(plants_response),
+            plants=plants_response
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching plants: {str(e)}")
+
+@router.post("/plants/add-to-owned")
+async def add_plant_to_owned(request: AddPlantRequest):
+    """Add a plant from Plants collection to plants_owned collection"""
+    try:
+        db = ensure_db_connection()
+        
+        # First, find the plant in the Plants collection
+        plant = db["Plants"].find_one({"plant_id": request.plant_id})
+        
+        if not plant:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Plant with plant_id {request.plant_id} not found in Plants collection"
+            )
+        
+        # Generate a unique plants_owned_id
+        plants_owned_id = str(uuid.uuid4())
+        
+        # Create the owned plant document
+        owned_plant = {
+            "plants_owned_id": plants_owned_id,
+            "plant_id": plant["plant_id"],
+            "common_name": plant["common_name"],
+            "monthly_carbon_absorption_g": plant["monthly_carbon_absorption_g"],
+            "plant_type": plant["plant_type"],
+            "light_requirement": plant["light_requirement"],
+            "water_frequency": plant["water_frequency"],
+            "pot_size_min_inches": plant["pot_size_min_inches"],
+            "soil_type": plant["soil_type"],
+            "humidity_preference": plant["humidity_preference"],
+            "temperature_range_f": plant["temperature_range_f"],
+            "growth_rate": plant["growth_rate"],
+            "max_height_inches": plant["max_height_inches"],
+            "care_difficulty": plant["care_difficulty"],
+            "propagation_method": plant["propagation_method"],
+            "flowering": plant["flowering"],
+            "pet_safe": plant["pet_safe"],
+            "air_purifying": plant["air_purifying"],
+            "added_at": datetime.now().isoformat()
+        }
+        
+        # Insert into plants_owned collection
+        result = db["plants_owned"].insert_one(owned_plant)
+        
+        if result.inserted_id:
+            return {
+                "message": "Plant added to owned plants successfully",
+                "plants_owned_id": plants_owned_id,
+                "plant_id": request.plant_id,
+                "common_name": plant["common_name"],
+                "added_at": owned_plant["added_at"]
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to add plant to owned plants")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding plant to owned: {str(e)}")
+
+@router.get("/plants/owned", response_model=PlantsOwnedListResponse)
+async def get_owned_plants():
+    """Get all plants from the plants_owned collection"""
+    try:
+        db = ensure_db_connection()
+        
+        # Get all owned plants from the plants_owned collection
+        owned_plants_cursor = db["plants_owned"].find({}, {"_id": 0})  # Exclude MongoDB _id field
+        owned_plants_list = list(owned_plants_cursor)
+        
+        # Convert to response format
+        owned_plants_response = []
+        for owned_plant in owned_plants_list:
+            plant_owned_response = PlantOwnedResponse(**owned_plant)
+            owned_plants_response.append(plant_owned_response)
+        
+        return PlantsOwnedListResponse(
+            total_owned_plants=len(owned_plants_response),
+            owned_plants=owned_plants_response
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching owned plants: {str(e)}")
+
+@router.delete("/plants/owned/{plants_owned_id}")
+async def delete_owned_plant(plants_owned_id: str):
+    """Delete a plant from plants_owned collection using plants_owned_id"""
+    try:
+        db = ensure_db_connection()
+        
+        # Find and delete the owned plant by plants_owned_id
+        result = db["plants_owned"].delete_one({"plants_owned_id": plants_owned_id})
+        
+        if result.deleted_count == 0:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Owned plant with plants_owned_id '{plants_owned_id}' not found"
+            )
+        
+        return {
+            "message": "Owned plant deleted successfully",
+            "plants_owned_id": plants_owned_id,
+            "deleted_at": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting owned plant: {str(e)}")
+
+@router.get("/plants/{plant_id}")
+async def get_plant_by_id(plant_id: int):
+    """Get a specific plant by plant_id from Plants collection"""
+    try:
+        db = ensure_db_connection()
+        
+        # Find the plant by plant_id
+        plant = db["Plants"].find_one({"plant_id": plant_id}, {"_id": 0})
+        
+        if not plant:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Plant with plant_id {plant_id} not found"
+            )
+        
+        return PlantResponse(**plant)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching plant: {str(e)}")
+
+@router.get("/plants/owned/{plants_owned_id}")
+async def get_owned_plant_by_id(plants_owned_id: str):
+    """Get a specific owned plant by plants_owned_id"""
+    try:
+        db = ensure_db_connection()
+        
+        # Find the owned plant by plants_owned_id
+        owned_plant = db["plants_owned"].find_one({"plants_owned_id": plants_owned_id}, {"_id": 0})
+        
+        if not owned_plant:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Owned plant with plants_owned_id '{plants_owned_id}' not found"
+            )
+        
+        return PlantOwnedResponse(**owned_plant)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching owned plant: {str(e)}")
+
+@router.get("/plants/owned/by-plant-id/{plant_id}")
+async def get_owned_plants_by_plant_id(plant_id: int):
+    """Get all owned plants with a specific plant_id"""
+    try:
+        db = ensure_db_connection()
+        
+        # Find all owned plants with the specified plant_id
+        owned_plants_cursor = db["plants_owned"].find({"plant_id": plant_id}, {"_id": 0})
+        owned_plants_list = list(owned_plants_cursor)
+        
+        if not owned_plants_list:
+            return {
+                "message": f"No owned plants found with plant_id {plant_id}",
+                "plant_id": plant_id,
+                "total_owned": 0,
+                "owned_plants": []
+            }
+        
+        # Convert to response format
+        owned_plants_response = []
+        for owned_plant in owned_plants_list:
+            plant_owned_response = PlantOwnedResponse(**owned_plant)
+            owned_plants_response.append(plant_owned_response)
+        
+        return {
+            "plant_id": plant_id,
+            "total_owned": len(owned_plants_response),
+            "owned_plants": owned_plants_response
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching owned plants by plant_id: {str(e)}")
+    
+@router.get("/plants-owned/carbon-absorption", response_model=CarbonAbsorptionResponse)
+async def get_total_carbon_absorption():
+    """Calculate total monthly carbon absorption for all owned plants"""
+    try:
+        db = ensure_db_connection()
+        
+        # Use MongoDB aggregation pipeline to sum the monthly_carbon_absorption_g field
+        pipeline = [
+            {
+                "$group": {
+                    "_id": None,
+                    "total_carbon_absorption": {"$sum": "$monthly_carbon_absorption_g"},
+                    "plant_count": {"$sum": 1}
+                }
+            }
+        ]
+        
+        result = list(db["plants_owned"].aggregate(pipeline))
+        
+        if result:
+            return CarbonAbsorptionResponse(
+                total_monthly_carbon_absorption_g=result[0]["total_carbon_absorption"],
+                total_plants_owned=result[0]["plant_count"]
+            )
+        else:
+            # No plants found in collection
+            return CarbonAbsorptionResponse(
+                total_monthly_carbon_absorption_g=0,
+                total_plants_owned=0
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error calculating carbon absorption: {str(e)}")
+
+
+@router.get("/carbon-data/latest-emission", response_model=LatestEmissionResponse)
+async def get_latest_carbon_emission():
+    """Get the total monthly emission from the latest added carbon data record"""
+    try:
+        db = ensure_db_connection()
+        
+        # Find the latest document based on created_at field (descending order)
+        latest_carbon_data = db["carbon_data"].find_one(
+            {},
+            {"response_data.total_monthly_emission_kg": 1, 
+             "timestamp": 1, 
+             "created_at": 1, 
+             "_id": 0}
+        ).sort("created_at", -1)
+        
+        if not latest_carbon_data:
+            raise HTTPException(status_code=404, detail="No carbon data found")
+        
+        # Extract the total_monthly_emission_kg from response_data
+        total_emission = latest_carbon_data["response_data"]["total_monthly_emission_kg"]
+        
+        return LatestEmissionResponse(
+            total_monthly_emission_kg=total_emission,
+            timestamp=latest_carbon_data["timestamp"],
+            created_at=latest_carbon_data["created_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except KeyError as e:
+        raise HTTPException(status_code=500, detail=f"Missing expected field in carbon data: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching latest carbon emission: {str(e)}")
+
+
+
+
+
+# Alternative implementation using aggregation pipeline (more efficient for large datasets)
+@router.get("/carbon-data/latest-emission-alt", response_model=LatestEmissionResponse)
+async def get_latest_carbon_emission_alt():
+    """Get the total monthly emission from the latest added carbon data record using aggregation"""
+    try:
+        db = ensure_db_connection()
+        
+        # Use aggregation pipeline to get the latest document
+        pipeline = [
+            {
+                "$sort": {"created_at": -1}  # Sort by created_at descending
+            },
+            {
+                "$limit": 1  # Get only the first (latest) document
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "total_monthly_emission_kg": "$response_data.total_monthly_emission_kg",
+                    "timestamp": 1,
+                    "created_at": 1
+                }
+            }
+        ]
+        
+        result = list(db["carbon_data"].aggregate(pipeline))
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="No carbon data found")
+        
+        latest_data = result[0]
+        
+        # Check if the required field exists
+        if "total_monthly_emission_kg" not in latest_data or latest_data["total_monthly_emission_kg"] is None:
+            raise HTTPException(status_code=500, detail="Missing total_monthly_emission_kg in latest carbon data")
+        
+        return LatestEmissionResponse(
+            total_monthly_emission_kg=latest_data["total_monthly_emission_kg"],
+            timestamp=latest_data["timestamp"],
+            created_at=latest_data["created_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # More detailed error logging
+        import traceback
+        print(f"Full error traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error fetching latest carbon emission: {str(e)}")
